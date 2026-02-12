@@ -1,0 +1,421 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import Header from './components/Header';
+import Hero from './components/Hero';
+import CategorySection from './components/CategorySection';
+import Cart from './components/Cart';
+import ProductDetail from './components/ProductDetail';
+import AuthModal from './components/AuthModal';
+import LicenseModal from './components/LicenseModal';
+import { Product, Category, CartItem, User, Address, Order } from './types';
+import { db } from './services/db';
+
+enum ViewState {
+  HOME,
+  CATEGORY,
+  PRODUCT,
+  SEARCH,
+  PROFILE
+}
+
+const App: React.FC = () => {
+  const [currentView, setCurrentView] = useState<ViewState>(ViewState.HOME);
+  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  
+  const [localProducts, setLocalProducts] = useState<Product[]>([]);
+  const [isCartOpen, setIsCartOpen] = useState(false);
+  const [isLicenseOpen, setIsLicenseOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isOwnerMode, setIsOwnerMode] = useState(false);
+  const [ownerPassword, setOwnerPassword] = useState('');
+  const [showOwnerLogin, setShowOwnerLogin] = useState(false);
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [authModal, setAuthModal] = useState<{ isOpen: boolean; mode: 'login' | 'signup' }>({
+    isOpen: false,
+    mode: 'login'
+  });
+
+  // Load initial data from DB
+  useEffect(() => {
+    setLocalProducts(db.getProducts());
+    setCurrentUser(db.getCurrentUser());
+  }, []);
+
+  const [newProduct, setNewProduct] = useState<Partial<Product>>({
+    name: '', price: 0, image: '', description: '',
+  });
+
+  const [addressForm, setAddressForm] = useState<Address>({
+    fullName: '', street: '', city: '', state: '', zipCode: '', phone: ''
+  });
+
+  useEffect(() => {
+    if (currentUser?.address) {
+      setAddressForm(currentUser.address);
+    } else if (currentUser) {
+      setAddressForm(prev => ({ ...prev, fullName: currentUser.fullName }));
+    }
+  }, [currentUser]);
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => setNewProduct(prev => ({ ...prev, image: reader.result as string }));
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const addToCart = (product: Product) => {
+    setCartItems(prev => {
+      const existing = prev.find(item => item.id === product.id);
+      if (existing) {
+        return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+      }
+      return [...prev, { ...product, quantity: 1 }];
+    });
+    setIsCartOpen(true);
+  };
+
+  const handleCheckout = () => {
+    if (!currentUser) {
+      setAuthModal({ isOpen: true, mode: 'login' });
+      setIsCartOpen(false);
+      return;
+    }
+    if (!currentUser.address || !currentUser.address.street) {
+      alert("Please complete your delivery profile to receive your royal order.");
+      setCurrentView(ViewState.PROFILE);
+      setIsCartOpen(false);
+      return;
+    }
+
+    const total = cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const newOrder: Order = {
+      id: `ORDER-${Date.now()}`,
+      date: new Date().toLocaleDateString('en-IN', { 
+        year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' 
+      }),
+      items: cartItems.map(item => ({ 
+        id: item.id, name: item.name, price: item.price, quantity: item.quantity, image: item.image 
+      })),
+      total,
+      address: currentUser.address
+    };
+
+    const updatedUser = db.addOrder(currentUser.id, newOrder);
+    if (updatedUser) {
+      setCurrentUser(db.getCurrentUser());
+      setCartItems([]);
+      setIsCartOpen(false);
+      alert("Success! Your heritage treasures are being prepared for delivery.");
+      setCurrentView(ViewState.PROFILE);
+    }
+  };
+
+  const saveProduct = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newProduct.name && newProduct.image && newProduct.price && selectedCategory) {
+      const p: Product = {
+        id: editingProductId || `prod-${Date.now()}`,
+        name: newProduct.name,
+        price: Number(newProduct.price),
+        image: newProduct.image,
+        description: newProduct.description || '',
+        category: selectedCategory,
+        isNewArrival: !editingProductId
+      };
+      db.saveProduct(p);
+      setLocalProducts(db.getProducts());
+      setEditingProductId(null);
+      setNewProduct({ name: '', price: 0, image: '', description: '' });
+      alert(`Heritage item "${p.name}" has been preserved in the database.`);
+      window.scrollTo({ top: 200, behavior: 'smooth' });
+    } else if (!newProduct.image) {
+      alert("Every royal piece needs a portrait. Please upload an image.");
+    }
+  };
+
+  const handleDeleteProduct = (id: string) => {
+    if (window.confirm("Are you sure you want to remove this piece from the heritage collection?")) {
+      db.deleteProduct(id);
+      setLocalProducts(db.getProducts());
+      alert("Item removed successfully.");
+    }
+  };
+
+  const filteredProducts = useMemo(() => {
+    let list = localProducts;
+    if (currentView === ViewState.CATEGORY && selectedCategory) {
+      list = list.filter(p => p.category === selectedCategory);
+    } else if (currentView === ViewState.SEARCH && searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(p => 
+        p.name.toLowerCase().includes(q) || 
+        p.description.toLowerCase().includes(q) || 
+        p.category.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [selectedCategory, searchQuery, currentView, localProducts]);
+
+  const goHome = () => {
+    setCurrentView(ViewState.HOME);
+    setSelectedCategory(null);
+    setSelectedProduct(null);
+    setSearchQuery('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  return (
+    <div className="min-h-screen bg-white">
+      <Header 
+        cartCount={cartItems.reduce((s, i) => s + i.quantity, 0)} 
+        onOpenCart={() => setIsCartOpen(true)}
+        onGoHome={goHome}
+        onSearch={(q) => { setSearchQuery(q); setCurrentView(q.trim() ? ViewState.SEARCH : ViewState.HOME); }}
+        searchQuery={searchQuery}
+        onOpenAuth={(mode) => setAuthModal({ isOpen: true, mode })}
+      />
+      
+      {currentUser && (
+        <div className="bg-rose-950 text-rose-200 py-3 px-4 flex flex-wrap justify-center items-center gap-4 text-[10px] uppercase tracking-[0.2em] font-bold border-b border-rose-900">
+          <span className="flex items-center"><span className="mr-2 text-rose-400">❁</span> Welcome, {currentUser.fullName}</span>
+          <button onClick={() => setCurrentView(ViewState.PROFILE)} className="hover:text-white underline decoration-rose-700 transition-colors">Royal Profile & Orders</button>
+          <button onClick={() => { db.logout(); setCurrentUser(null); goHome(); }} className="hover:text-white transition-colors">Logout</button>
+        </div>
+      )}
+
+      <main className="min-h-[80vh]">
+        {currentView === ViewState.HOME && !selectedProduct && (
+          <div className="fade-in">
+            <Hero />
+            <CategorySection 
+              onSelectCategory={(cat) => { setSelectedCategory(cat); setCurrentView(ViewState.CATEGORY); window.scrollTo(0,0); }}
+              onExploreMore={() => { setSelectedCategory(Category.CLOTHES); setCurrentView(ViewState.CATEGORY); window.scrollTo(0,0); }}
+            />
+          </div>
+        )}
+
+        {(currentView === ViewState.CATEGORY || currentView === ViewState.SEARCH) && !selectedProduct && (
+          <div className="max-w-7xl mx-auto px-4 py-20 fade-in">
+            <div className="flex flex-col md:flex-row md:items-end justify-between mb-16 gap-8">
+              <div>
+                <button onClick={goHome} className="text-rose-700 flex items-center space-x-2 text-xs font-bold uppercase tracking-widest mb-4 hover:text-rose-950 group">
+                  <svg className="h-4 w-4 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15 19l-7-7 7-7" strokeWidth={2} /></svg>
+                  <span>Return to Palace</span>
+                </button>
+                <h2 className="text-6xl font-bold text-rose-950 royal-font">
+                  {currentView === ViewState.SEARCH ? `Searching Heritage` : selectedCategory}
+                </h2>
+              </div>
+              {isOwnerMode && (
+                 <button onClick={() => setIsOwnerMode(false)} className="px-6 py-2 border border-rose-200 text-rose-400 rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-rose-50 transition-colors">Lock Collection</button>
+              )}
+            </div>
+
+            {filteredProducts.length === 0 ? (
+              <div className="text-center py-40 bg-stone-50 rounded-[4rem] border-2 border-dashed border-rose-100">
+                <p className="text-3xl royal-font text-rose-950 mb-8 px-6 italic">"The gallery currently awaits its master's curation."</p>
+                <button onClick={() => setShowOwnerLogin(true)} className="px-12 py-4 bg-rose-950 text-white rounded-full font-bold shadow-2xl hover:bg-rose-900 transition-all scale-110">LIST FIRST PIECE</button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-16">
+                {filteredProducts.map((p) => (
+                  <div key={p.id} className="group bg-white rounded-[2.5rem] overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-700 border border-rose-50 cursor-pointer relative" onClick={() => setSelectedProduct(p)}>
+                    <div className="relative h-[500px] overflow-hidden">
+                      <img src={p.image} className="w-full h-full object-cover transition-transform duration-[2s] group-hover:scale-110" />
+                      {isOwnerMode && (
+                        <div className="absolute top-6 right-6 flex flex-col gap-3">
+                          <button onClick={(e) => { e.stopPropagation(); setEditingProductId(p.id); setNewProduct(p); const el = document.getElementById('product-form-section'); el?.scrollIntoView({ behavior: 'smooth' }); }} className="p-4 bg-white/95 text-rose-950 rounded-full shadow-xl hover:bg-rose-950 hover:text-white transition-all"><svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" strokeWidth={2}/></svg></button>
+                          <button onClick={(e) => { e.stopPropagation(); handleDeleteProduct(p.id); }} className="p-4 bg-rose-50/95 text-rose-800 rounded-full shadow-xl hover:bg-rose-800 hover:text-white transition-all"><svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth={2}/></svg></button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-10">
+                      <h3 className="text-3xl font-bold text-rose-950 royal-font mb-4">{p.name}</h3>
+                      <div className="flex items-center justify-between border-t border-rose-50 pt-8">
+                        <span className="text-4xl font-bold text-rose-950">₹{p.price}</span>
+                        <button onClick={(e) => { e.stopPropagation(); addToCart(p); }} className="px-8 py-3 bg-rose-950 text-white rounded-2xl hover:bg-rose-800 transition-all font-bold text-xs uppercase tracking-widest shadow-lg">Add to Bag</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* PRODUCT MANAGEMENT (OWNER) */}
+            {selectedCategory && (
+              <div id="product-form-section" className="mt-32 pt-24 border-t border-rose-100">
+                {!isOwnerMode ? (
+                  <div className="flex flex-col items-center">
+                    {!showOwnerLogin ? (
+                      <button onClick={() => setShowOwnerLogin(true)} className="text-rose-300 hover:text-rose-950 transition-colors text-xs font-bold tracking-[0.6em] uppercase py-6 px-12 border-2 border-dashed border-rose-100 rounded-full">Owner Vault Access</button>
+                    ) : (
+                      <div className="bg-stone-50 p-12 rounded-[3rem] border border-rose-100 w-full max-w-sm flex flex-col items-center shadow-2xl">
+                        <h4 className="royal-font text-2xl mb-8 text-rose-950">Vault Key Required</h4>
+                        <input type="password" placeholder="Key (Try 1234)" value={ownerPassword} onChange={(e) => setOwnerPassword(e.target.value)} className="w-full px-6 py-4 rounded-2xl border border-rose-200 mb-6 outline-none focus:ring-2 focus:ring-rose-800 transition-all text-center" />
+                        <div className="flex gap-6 w-full">
+                          <button onClick={() => { if(ownerPassword==='1234'){setIsOwnerMode(true);setShowOwnerLogin(false);setOwnerPassword('');} else alert('Access Denied'); }} className="flex-1 bg-rose-950 text-white py-4 rounded-xl font-bold transition-all hover:bg-rose-900 shadow-lg">Unlock</button>
+                          <button onClick={() => setShowOwnerLogin(false)} className="flex-1 text-stone-400 font-bold hover:text-rose-950">Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-rose-50/20 p-16 rounded-[4rem] border-2 border-dashed border-rose-200 max-w-5xl mx-auto shadow-sm">
+                    <div className="flex justify-between items-center mb-12">
+                      <h3 className="royal-font text-4xl text-rose-950">{editingProductId ? 'Refine Heritage Piece' : `Expand ${selectedCategory} Gallery`}</h3>
+                      {editingProductId && <button onClick={() => {setEditingProductId(null); setNewProduct({name:'',price:0,image:'',description:''});}} className="text-rose-600 font-bold uppercase tracking-widest text-xs hover:underline">Cancel Edit</button>}
+                    </div>
+                    <form onSubmit={saveProduct} className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                      <div className="space-y-8">
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-rose-800 mb-3">Item Name</label>
+                          <input required value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 transition-all shadow-sm" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-rose-800 mb-3">Royal Value (INR)</label>
+                          <input required type="number" value={newProduct.price || ''} onChange={e => setNewProduct({...newProduct, price: Number(e.target.value)})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 transition-all shadow-sm" />
+                        </div>
+                        <div className="relative h-60 border-2 border-dashed border-rose-200 rounded-[2.5rem] overflow-hidden bg-white flex items-center justify-center group">
+                          {newProduct.image ? <img src={newProduct.image} className="h-full w-full object-cover" /> : <div className="text-center"><svg className="mx-auto h-12 w-12 text-rose-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeWidth={1} /></svg><span className="text-[10px] uppercase font-bold text-rose-300 tracking-widest">Select Heritage Portrait</span></div>}
+                          <input type="file" accept="image/*" onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </div>
+                      </div>
+                      <div className="space-y-8">
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-rose-800 mb-3">Artisan's Tale (Description)</label>
+                          <textarea required rows={8} value={newProduct.description} onChange={e => setNewProduct({...newProduct, description: e.target.value})} className="w-full px-8 py-6 rounded-[2.5rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 transition-all resize-none shadow-sm" />
+                        </div>
+                        <button type="submit" className="w-full py-6 bg-rose-950 text-white rounded-[2rem] font-bold tracking-[0.3em] shadow-2xl hover:bg-rose-900 transition-all transform active:scale-95 uppercase">Save to Heritage Records</button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentView === ViewState.PROFILE && currentUser && (
+          <div className="max-w-6xl mx-auto px-4 py-24 fade-in">
+            <h2 className="royal-font text-6xl font-bold text-rose-950 mb-20 text-center">Your Royal Dashboard</h2>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-24">
+              {/* ADDRESS SECTION */}
+              <div className="space-y-12">
+                <div className="flex items-center space-x-4 border-b border-rose-100 pb-6">
+                  <span className="h-10 w-10 bg-rose-950 text-rose-50 flex items-center justify-center rounded-full font-bold">1</span>
+                  <h3 className="royal-font text-3xl font-bold text-rose-950">Delivery Profile</h3>
+                </div>
+                <div className="bg-white rounded-[3rem] p-12 shadow-2xl border border-rose-50">
+                  <form onSubmit={(e) => { e.preventDefault(); const u = db.updateUserAddress(currentUser.id, addressForm); if(u) setCurrentUser(db.getCurrentUser()); alert("Profile Updated."); }} className="space-y-8">
+                    <input required placeholder="Receiver's Full Name" value={addressForm.fullName} onChange={e => setAddressForm({...addressForm, fullName: e.target.value})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 shadow-sm" />
+                    <input required placeholder="Street / Palace Name" value={addressForm.street} onChange={e => setAddressForm({...addressForm, street: e.target.value})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 shadow-sm" />
+                    <div className="grid grid-cols-2 gap-6">
+                      <input required placeholder="City" value={addressForm.city} onChange={e => setAddressForm({...addressForm, city: e.target.value})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 shadow-sm" />
+                      <input required placeholder="State" value={addressForm.state} onChange={e => setAddressForm({...addressForm, state: e.target.value})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 shadow-sm" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-6">
+                      <input required placeholder="Zip Code" value={addressForm.zipCode} onChange={e => setAddressForm({...addressForm, zipCode: e.target.value})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 shadow-sm" />
+                      <input required placeholder="Contact Number" value={addressForm.phone} onChange={e => setAddressForm({...addressForm, phone: e.target.value})} className="w-full px-8 py-5 rounded-[2rem] border border-rose-100 outline-none focus:ring-2 focus:ring-rose-800 shadow-sm" />
+                    </div>
+                    <button type="submit" className="w-full py-6 bg-rose-950 text-white rounded-[2rem] font-bold tracking-widest shadow-2xl hover:bg-rose-900 transition-all uppercase">Save Delivery Details</button>
+                  </form>
+                </div>
+              </div>
+              
+              {/* ORDER HISTORY */}
+              <div className="space-y-12">
+                <div className="flex items-center space-x-4 border-b border-rose-100 pb-6">
+                  <span className="h-10 w-10 bg-rose-950 text-rose-50 flex items-center justify-center rounded-full font-bold">2</span>
+                  <h3 className="royal-font text-3xl font-bold text-rose-950">Purchase Heritage</h3>
+                </div>
+                <div className="space-y-8 max-h-[700px] overflow-y-auto pr-6 custom-scrollbar">
+                  {(!currentUser.orders || currentUser.orders.length === 0) ? (
+                    <div className="text-center py-24 bg-stone-50 rounded-[3rem] border border-dashed border-rose-100 opacity-60">
+                      <p className="royal-font text-xl text-rose-950">No royal bags recorded yet.</p>
+                      <button onClick={goHome} className="mt-4 text-rose-700 font-bold hover:underline">Explore Collections</button>
+                    </div>
+                  ) : (
+                    currentUser.orders.map(order => (
+                      <div key={order.id} className="bg-white p-10 rounded-[3rem] border border-rose-50 shadow-xl flex flex-col space-y-6 transition-transform hover:-translate-y-2">
+                        <div className="flex justify-between items-center border-b border-rose-100 pb-6">
+                          <div>
+                            <p className="text-[10px] text-rose-400 font-bold uppercase tracking-widest mb-1">{order.date}</p>
+                            <p className="text-xs font-bold text-rose-900 uppercase">Order ID: {order.id.split('-')[1]}</p>
+                          </div>
+                          <span className="text-3xl font-bold text-rose-950">₹{order.total}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-4">
+                          {order.items.map((item, idx) => (
+                            <div key={`${order.id}-${idx}`} className="group relative">
+                              <img src={item.image} className="h-16 w-16 rounded-2xl object-cover ring-2 ring-rose-50 shadow-md group-hover:scale-110 transition-transform" />
+                              <span className="absolute -top-2 -right-2 bg-rose-950 text-white text-[10px] h-5 w-5 rounded-full flex items-center justify-center font-bold">x{item.quantity}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="flex justify-between items-center pt-4">
+                          <span className="text-[10px] font-bold text-green-700 bg-green-50 px-3 py-1 rounded-full uppercase tracking-widest">In transit</span>
+                          <button className="text-[10px] font-bold text-rose-950 hover:underline uppercase tracking-widest">View Details</button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedProduct && <ProductDetail product={selectedProduct} onBack={() => setSelectedProduct(null)} onAddToCart={addToCart} />}
+      </main>
+
+      <footer className="bg-rose-950 text-rose-50 py-32 mt-20">
+        <div className="max-w-7xl mx-auto px-4 grid grid-cols-1 md:grid-cols-3 gap-20">
+          <div className="text-center md:text-left">
+            <h3 className="royal-font text-4xl font-bold mb-8">Shree Ji Rajasthan</h3>
+            <p className="text-rose-200/50 leading-loose font-light italic">"Preserving the majestic soul of Rajasthan for generations to come."</p>
+          </div>
+          <div className="flex flex-col items-center">
+            <h4 className="uppercase tracking-[0.4em] text-xs font-bold text-rose-400 mb-10">Royal Promise</h4>
+            <p className="text-center text-rose-100 font-serif italic text-3xl tracking-[0.2em]">पधारो म्हारे देश</p>
+            <button 
+              onClick={() => setIsLicenseOpen(true)}
+              className="mt-10 text-[10px] font-bold tracking-[0.3em] text-rose-600 hover:text-white transition-colors"
+            >
+              ROYAL PLATFORM LICENSE
+            </button>
+          </div>
+          <div className="text-center md:text-right">
+            <h4 className="uppercase tracking-widest text-xs font-bold text-rose-400 mb-8">Jaipur Studio</h4>
+            <p className="text-rose-200/50 mb-2 font-light">Johari Bazaar, Jaipur</p>
+            <p className="text-rose-400 mt-10 font-bold tracking-widest text-xs underline decoration-rose-900">heritage@shreejirajasthan.com</p>
+          </div>
+        </div>
+      </footer>
+
+      <Cart 
+        isOpen={isCartOpen} 
+        onClose={() => setIsCartOpen(false)} 
+        items={cartItems} 
+        onRemove={(id) => setCartItems(prev => prev.filter(i => i.id !== id))} 
+        onUpdateQuantity={(id, d) => setCartItems(prev => prev.map(i => i.id === id ? {...i, quantity: Math.max(1, i.quantity + d)} : i))}
+        onCheckout={handleCheckout}
+      />
+      
+      <AuthModal 
+        isOpen={authModal.isOpen} 
+        onClose={() => setAuthModal({ ...authModal, isOpen: false })} 
+        initialMode={authModal.mode} 
+        onAuthSuccess={() => setCurrentUser(db.getCurrentUser())} 
+      />
+
+      <LicenseModal isOpen={isLicenseOpen} onClose={() => setIsLicenseOpen(false)} />
+    </div>
+  );
+};
+
+export default App;
